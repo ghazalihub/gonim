@@ -1,0 +1,115 @@
+package ir
+
+import "fmt"
+
+type (
+	BlockStmt struct {
+		List []Stmt
+	}
+
+	ExprStmt struct {
+		X Expr
+	}
+
+	DeclStmt struct {
+		Decls []Decl
+	}
+
+	AssignStmt struct {
+		Lhs []Expr
+		Rhs []Expr
+		Op  string // e.g., "=", ":=", "+="
+	}
+
+	ReturnStmt struct {
+		Results []Expr
+	}
+
+	IfStmt struct {
+		Init Stmt
+		Cond Expr
+		Body *BlockStmt
+		Else Stmt
+	}
+
+	ForStmt struct {
+		Init Stmt
+		Cond Expr
+		Post Stmt
+		Body *BlockStmt
+	}
+
+	RangeStmt struct {
+		Key   Expr
+		Value Expr
+		X     Expr
+		Body  *BlockStmt
+	}
+
+	BranchStmt struct {
+		Tok   string // BREAK, CONTINUE, GOTO, FALLTHROUGH
+		Label string
+	}
+
+	DeferStmt struct {
+		Call *CallExpr
+	}
+
+	GoStmt struct {
+		Call *CallExpr
+	}
+
+	SwitchStmt struct {
+		Init Stmt
+		Tag  Expr
+		Body *BlockStmt
+	}
+
+	CaseClause struct {
+		List []Expr
+		Body []Stmt
+	}
+
+	TypeSwitchStmt struct {
+		Init   Stmt
+		Assign Stmt // e.g., x := y.(type)
+		Body   *BlockStmt
+	}
+
+	TypeCaseClause struct {
+		Types []Type
+		Body  []Stmt
+	}
+)
+
+func (*BlockStmt) stmtNode()      {}
+func (*ExprStmt) stmtNode()       {}
+func (*DeclStmt) stmtNode()       {}
+func (*AssignStmt) stmtNode()     {}
+func (*ReturnStmt) stmtNode()     {}
+func (*IfStmt) stmtNode()         {}
+func (*ForStmt) stmtNode()        {}
+func (*RangeStmt) stmtNode()      {}
+func (*BranchStmt) stmtNode()     {}
+func (*DeferStmt) stmtNode()      {}
+func (*GoStmt) stmtNode()         {}
+func (*SwitchStmt) stmtNode()     {}
+func (*CaseClause) stmtNode()     {}
+func (*TypeSwitchStmt) stmtNode() {}
+func (*TypeCaseClause) stmtNode() {}
+
+func (s *BlockStmt) String() string      { return "{...}" }
+func (s *ExprStmt) String() string       { return fmt.Sprintf("%s", s.X) }
+func (s *DeclStmt) String() string       { return "decl" }
+func (s *AssignStmt) String() string     { return "assign" }
+func (s *ReturnStmt) String() string     { return "return" }
+func (s *IfStmt) String() string         { return "if" }
+func (s *ForStmt) String() string        { return "for" }
+func (s *RangeStmt) String() string      { return "range" }
+func (s *BranchStmt) String() string     { return s.Tok }
+func (s *DeferStmt) String() string      { return "defer" }
+func (s *GoStmt) String() string         { return "go" }
+func (s *SwitchStmt) String() string     { return "switch" }
+func (s *CaseClause) String() string     { return "case" }
+func (s *TypeSwitchStmt) String() string { return "type switch" }
+func (s *TypeCaseClause) String() string { return "type case" }
