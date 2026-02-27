@@ -50,6 +50,7 @@ type (
 		Params  []*Field
 		Results []*Field
 		TypeParams []*TypeParam
+		Variadic   bool
 	}
 
 	TypeParam struct {

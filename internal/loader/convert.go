@@ -227,7 +227,7 @@ func (c *converter) convertType(t types.Type) ir.Type {
 }
 
 func (c *converter) convertSignature(sig *types.Signature) *ir.FuncType {
-	ft := &ir.FuncType{}
+	ft := &ir.FuncType{Variadic: sig.Variadic()}
 	if sig.TypeParams() != nil {
 		for i := 0; i < sig.TypeParams().Len(); i++ {
 			tp := sig.TypeParams().At(i)
