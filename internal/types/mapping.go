@@ -56,20 +56,38 @@ func MapType(t ir.Type, adder ImportAdder) string {
 		}
 		return fmt.Sprintf("Table[%s, %s]", MapType(tt.Key, adder), MapType(tt.Value, adder))
 	case *ir.NamedType:
+		name := tt.Name
+		if tt.Package != "" && tt.Package != "main" && !strings.Contains(tt.Package, "command-line-arguments") {
+			name = tt.Package + "." + name
+		}
 		if len(tt.TypeArgs) > 0 {
 			var args []string
 			for _, arg := range tt.TypeArgs {
 				args = append(args, MapType(arg, adder))
 			}
-			return fmt.Sprintf("%s[%s]", tt.Name, strings.Join(args, ", "))
+			return fmt.Sprintf("%s[%s]", name, strings.Join(args, ", "))
 		}
-		return tt.Name
+		return name
 	case *ir.StructType:
-		return "object" // Simplified
+		var fields []string
+		for _, f := range tt.Fields {
+			for _, name := range f.Names {
+				fields = append(fields, fmt.Sprintf("%s: %s", name, MapType(f.Type, adder)))
+			}
+		}
+		return fmt.Sprintf("tuple[%s]", strings.Join(fields, ", "))
 	case *ir.InterfaceType:
 		return "concept" // Simplified
 	case *ir.FuncType:
-		return "proc" // Simplified
+		var params []string
+		for _, p := range tt.Params {
+			params = append(params, MapType(p.Type, adder))
+		}
+		res := "void"
+		if len(tt.Results) > 0 {
+			res = MapType(tt.Results[0].Type, adder)
+		}
+		return fmt.Sprintf("proc(%s): %s", strings.Join(params, ", "), res)
 	case *ir.TypeParam:
 		return tt.Name
 	}

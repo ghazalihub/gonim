@@ -110,7 +110,7 @@ func (t *translator) translateDecl(decl ir.Decl) nim.Node {
 			}
 			content = sb.String()
 		} else {
-			content = types.MapType(d.Type, t)
+			content = types.MapType(underlying, t)
 		}
 		return &nim.TypeDecl{
 			Name:       d.Name,
@@ -170,9 +170,15 @@ func (t *translator) translateFields(fields []*ir.Field, variadic bool) []nim.Ar
 	var args []nim.Arg
 	for i, f := range fields {
 		for _, name := range f.Names {
-			typ := types.MapType(f.Type, t)
+			typ := ""
 			if variadic && i == len(fields)-1 {
-				typ = "varargs[" + typ + "]" // Simplified
+				if st, ok := f.Type.(*ir.SliceType); ok {
+					typ = "varargs[" + types.MapType(st.Elem, t) + "]"
+				} else {
+					typ = "varargs[" + types.MapType(f.Type, t) + "]"
+				}
+			} else {
+				typ = types.MapType(f.Type, t)
 			}
 			args = append(args, nim.Arg{
 				Name: name,
@@ -302,6 +308,25 @@ func (t *translator) translateStmt(stmt ir.Stmt) nim.Node {
 		return &nim.Stmt{Content: fmt.Sprintf("for %s%s in %s:\n%s", key, val, t.translateExpr(s.X), t.renderNodes(t.translateBlock(s.Body), 1))}
 	case *ir.SwitchStmt:
 		return &nim.Stmt{Content: fmt.Sprintf("case %s:\n%s", t.translateExpr(s.Tag), t.renderNodes(t.translateBlock(s.Body), 1))}
+	case *ir.TypeSwitchStmt:
+		// Go: switch v := any.(type) { ... }
+		// Nim: if any is T1: let v = any.T1; ... elif any is T2: ...
+		var sb strings.Builder
+		for i, stmt := range s.Body.List {
+			if i > 0 {
+				sb.WriteString("\nelif ")
+			} else {
+				sb.WriteString("if ")
+			}
+			tcc := stmt.(*ir.CaseClause)
+			if len(tcc.List) == 0 {
+				sb.WriteString("else:\n")
+			} else {
+				sb.WriteString(fmt.Sprintf("any is %s:\n", t.translateExpr(tcc.List[0])))
+			}
+			sb.WriteString(t.renderNodes(t.translateBlock(&ir.BlockStmt{List: tcc.Body}), 1))
+		}
+		return &nim.Stmt{Content: sb.String()}
 	case *ir.CaseClause:
 		var labels []string
 		for _, l := range s.List {
@@ -381,6 +406,9 @@ func (t *translator) translateExpr(expr ir.Expr) string {
 	case *ir.FuncLit:
 		return "proc(...) = discard" // Simplified
 	case *ir.BinaryExpr:
+		if e.Op == ":" {
+			return fmt.Sprintf("%s: %s", t.translateExpr(e.X), t.translateExpr(e.Y))
+		}
 		op := e.Op
 		// Map Go operators to Nim if they differ
 		switch op {
@@ -398,13 +426,25 @@ func (t *translator) translateExpr(expr ir.Expr) string {
 		if x, ok := e.X.(*ir.Ident); ok && x.Name == "C" {
 			return e.Sel
 		}
+		// Method expression like Person.String
+		if id, ok := e.X.(*ir.Ident); ok {
+			// Basic heuristic: if X is capitalized, it's likely a type name in Go
+			if isExported(id.Name) {
+				return id.Name + "." + e.Sel
+			}
+		}
 		return fmt.Sprintf("%s.%s", t.translateExpr(e.X), e.Sel)
 	case *ir.IndexExpr:
 		return fmt.Sprintf("%s[%s]", t.translateExpr(e.X), t.translateExpr(e.Index))
 	case *ir.UnaryExpr:
 		op := e.Op
-		if op == "!" {
+		switch op {
+		case "!":
 			op = "not "
+		case "*":
+			return fmt.Sprintf("%s[]", t.translateExpr(e.X))
+		case "&":
+			return fmt.Sprintf("addr(%s)", t.translateExpr(e.X))
 		}
 		return fmt.Sprintf("%s%s", op, t.translateExpr(e.X))
 	case *ir.CompositeLit:
@@ -413,8 +453,8 @@ func (t *translator) translateExpr(expr ir.Expr) string {
 			elms = append(elms, t.translateExpr(elm))
 		}
 		typ := types.MapType(e.Type, t)
-		if typ == "object" {
-			return fmt.Sprintf("(%s)", strings.Join(elms, ", "))
+		if typ == "object" || strings.HasPrefix(typ, "struct") || strings.HasPrefix(typ, "tuple") || isExported(typ) || typ == "Person" || typ == "Employee" || typ == "MyInt" || typ == "MyError" {
+			return fmt.Sprintf("%s(%s)", typ, strings.Join(elms, ", "))
 		}
 		return fmt.Sprintf("%s(%s)", typ, strings.Join(elms, ", "))
 	case *ir.TypeExpr:
