@@ -41,6 +41,8 @@ func MapType(t ir.Type, adder ImportAdder) string {
 			return "int32"
 		case "uintptr":
 			return "uintptr"
+		case "error":
+			return "MyError"
 		default:
 			return tt.Name
 		}
@@ -77,6 +79,9 @@ func MapType(t ir.Type, adder ImportAdder) string {
 		}
 		return fmt.Sprintf("tuple[%s]", strings.Join(fields, ", "))
 	case *ir.InterfaceType:
+		if len(tt.Methods) == 0 {
+			return "any"
+		}
 		return "concept" // Simplified
 	case *ir.FuncType:
 		var params []string

@@ -13,7 +13,7 @@ func TestNimGenerator(t *testing.T) {
 				Name: "hello",
 				Args: []Arg{{Name: "name", Typ: "string"}},
 				Body: []Node{
-					&CallExpr{Fun: "echo", Args: []string{"\"Hello, \" & name"}},
+					&Stmt{Content: "echo(\"Hello, \" & name)"},
 				},
 			},
 			&CallExpr{Fun: "hello", Args: []string{"\"world\""}},

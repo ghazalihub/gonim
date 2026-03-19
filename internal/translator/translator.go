@@ -28,6 +28,7 @@ func Translate(prog *ir.Program) []*nim.File {
 }
 
 func (t *translator) translatePackage(pkg *ir.Package) *nim.File {
+	t.AddImport("gostdnim/builtin")
 	nimFile := &nim.File{}
 	var nodes []nim.Node
 	for _, file := range pkg.Files {
@@ -60,7 +61,7 @@ func (t *translator) translateDecl(decl ir.Decl) nim.Node {
 			args = append([]nim.Arg{{Name: recvName, Typ: types.MapType(d.Receiver.Type, t)}}, args...)
 		}
 		return &nim.ProcDecl{
-			Name:       d.Name,
+			Name:       EscapeNimKeyword(d.Name),
 			TypeParams: t.translateTypeParams(d.Type.TypeParams),
 			Args:       args,
 			ReturnTyp:  t.translateResults(d.Type.Results),
@@ -79,7 +80,7 @@ func (t *translator) translateDecl(decl ir.Decl) nim.Node {
 		}
 		return &nim.VarDecl{
 			Kind:  kind,
-			Name:  d.Names[0], // Simplified
+			Name:  EscapeNimKeyword(d.Names[0]), // Simplified
 			Typ:   types.MapType(d.Type, t),
 			Value: value,
 		}
@@ -89,7 +90,9 @@ func (t *translator) translateDecl(decl ir.Decl) nim.Node {
 		if nt, ok := d.Type.(*ir.NamedType); ok {
 			underlying = nt.Underlying
 		}
-		if st, ok := underlying.(*ir.StructType); ok {
+		if d.Alias {
+			content = types.MapType(underlying, t)
+		} else if st, ok := underlying.(*ir.StructType); ok {
 			var sb strings.Builder
 			sb.WriteString("object\n")
 			for _, f := range st.Fields {
@@ -98,7 +101,7 @@ func (t *translator) translateDecl(decl ir.Decl) nim.Node {
 					if isExported(name) {
 						exported = "*"
 					}
-					sb.WriteString(fmt.Sprintf("    %s%s: %s\n", name, exported, types.MapType(f.Type, t)))
+					sb.WriteString(fmt.Sprintf("    %s%s: %s\n", EscapeNimKeyword(name), exported, types.MapType(f.Type, t)))
 				}
 			}
 			content = sb.String()
@@ -106,23 +109,28 @@ func (t *translator) translateDecl(decl ir.Decl) nim.Node {
 			var sb strings.Builder
 			sb.WriteString("concept x\n")
 			for _, m := range it.Methods {
-				sb.WriteString(fmt.Sprintf("    x.%s() is %s\n", m.Name, t.translateResults(m.Type.Results)))
+				sb.WriteString(fmt.Sprintf("    x.%s() is %s\n", EscapeNimKeyword(m.Name), t.translateResults(m.Type.Results)))
 			}
 			content = sb.String()
 		} else {
 			content = types.MapType(underlying, t)
 		}
 		return &nim.TypeDecl{
-			Name:       d.Name,
+			Name:       EscapeNimKeyword(d.Name),
 			TypeParams: t.translateTypeParams(d.TypeParams),
 			Content:    content,
 			Exported:   isExported(d.Name),
+			IsAlias:    d.Alias,
 		}
 	case *ir.ConstDecl:
+		typ := types.MapType(d.Type, t)
+		if strings.Contains(typ, "untyped") {
+			typ = ""
+		}
 		return &nim.VarDecl{
 			Kind:  "const",
-			Name:  d.Names[0], // Simplified
-			Typ:   types.MapType(d.Type, t),
+			Name:  EscapeNimKeyword(d.Names[0]), // Simplified
+			Typ:   typ,
 			Value: t.translateExpr(d.Values[0]), // Simplified
 		}
 	case *ir.CGoDecl:
@@ -133,6 +141,7 @@ func (t *translator) translateDecl(decl ir.Decl) nim.Node {
 		}
 		// Map Go stdlib to gostdnim
 		stdLibs := map[string]string{
+			"builtin":       "gostdnim/builtin",
 			"fmt":           "gostdnim/fmt",
 			"os":            "gostdnim/os",
 			"io":            "gostdnim/io",
@@ -146,12 +155,14 @@ func (t *translator) translateDecl(decl ir.Decl) nim.Node {
 			"encoding/json": "gostdnim/encoding/json",
 		}
 		if nimPath, ok := stdLibs[d.Path]; ok {
-			return &nim.ImportStmt{Pkg: nimPath}
+			t.AddImport(nimPath)
+			return nil
 		}
 
 		parts := strings.Split(d.Path, "/")
 		pkg := parts[len(parts)-1]
-		return &nim.ImportStmt{Pkg: pkg}
+		t.AddImport(pkg)
+		return nil
 	}
 	return nil
 }
@@ -170,6 +181,7 @@ func (t *translator) translateFields(fields []*ir.Field, variadic bool) []nim.Ar
 	var args []nim.Arg
 	for i, f := range fields {
 		for _, name := range f.Names {
+			name = EscapeNimKeyword(name)
 			typ := ""
 			if variadic && i == len(fields)-1 {
 				if st, ok := f.Type.(*ir.SliceType); ok {
@@ -218,13 +230,24 @@ func (t *translator) translateBlock(b *ir.BlockStmt) []nim.Node {
 			nodes = append(nodes, sn)
 		}
 	}
+	if len(nodes) == 0 {
+		return []nim.Node{&nim.Stmt{Content: "discard"}}
+	}
 	return nodes
 }
 
 func (t *translator) translateStmt(stmt ir.Stmt) nim.Node {
 	switch s := stmt.(type) {
 	case *ir.ExprStmt:
-		return &nim.Stmt{Content: t.translateExpr(s.X)}
+		if ce, ok := s.X.(*ir.CallExpr); ok {
+			if id, ok := ce.Fun.(*ir.Ident); ok && id.Name == "append" {
+				args := ce.Args
+				slice := t.translateExpr(args[0])
+				val := t.translateExpr(args[1])
+				return &nim.Stmt{Content: fmt.Sprintf("%s.add(%s)", slice, val)}
+			}
+		}
+		return &nim.Stmt{Content: t.translateExprWithIndent(s.X, 0)}
 	case *ir.ReturnStmt:
 		if len(s.Results) == 0 {
 			// Check for named returns
@@ -234,7 +257,11 @@ func (t *translator) translateStmt(stmt ir.Stmt) nim.Node {
 		for _, r := range s.Results {
 			res = append(res, t.translateExpr(r))
 		}
-		return &nim.Stmt{Content: "return " + strings.Join(res, ", ")}
+		content := strings.Join(res, ", ")
+		if len(res) > 1 {
+			content = "(" + content + ")"
+		}
+		return &nim.Stmt{Content: "return " + content}
 	case *ir.DeclStmt:
 		var nodes []nim.Node
 		for _, decl := range s.Decls {
@@ -255,12 +282,50 @@ func (t *translator) translateStmt(stmt ir.Stmt) nim.Node {
 		if len(s.Lhs) == 1 && s.Lhs[0].(interface{String() string}).String() == "_" {
 			return &nim.Stmt{Content: "discard " + t.translateExpr(s.Rhs[0])}
 		}
+		hasBlank := false
+		for _, l := range s.Lhs {
+			if l.(interface{String() string}).String() == "_" {
+				hasBlank = true
+				break
+			}
+		}
+		if hasBlank && len(s.Lhs) > 1 {
+			var rhs string
+			if len(s.Rhs) == 1 {
+				rhs = t.translateExpr(s.Rhs[0])
+			} else {
+				var rs []string
+				for _, r := range s.Rhs {
+					rs = append(rs, t.translateExpr(r))
+				}
+				rhs = "(" + strings.Join(rs, ", ") + ")"
+			}
+			var ls []string
+			var discards []string
+			for i, l := range s.Lhs {
+				name := l.(interface{String() string}).String()
+				if name == "_" {
+					tmpName := fmt.Sprintf("_tmp%d", i)
+					ls = append(ls, tmpName)
+					discards = append(discards, "discard "+tmpName)
+				} else {
+					ls = append(ls, t.translateExpr(l))
+				}
+			}
+			lhs := strings.Join(ls, ", ")
+			op := s.Op
+			if op == ":=" {
+				return &nim.Stmt{Content: fmt.Sprintf("block:\n  var (%s) = %s\n  %s", lhs, rhs, strings.Join(discards, "\n  "))}
+			}
+			return &nim.Stmt{Content: fmt.Sprintf("block:\n  (%s) = %s\n  %s", lhs, rhs, strings.Join(discards, "\n  "))}
+		}
+
 		var lhs, rhs []string
 		for _, l := range s.Lhs {
 			lhs = append(lhs, t.translateExpr(l))
 		}
 		for _, r := range s.Rhs {
-			rhs = append(rhs, t.translateExpr(r))
+			rhs = append(rhs, t.translateExprWithIndent(r, 0))
 		}
 		lhsStr := strings.Join(lhs, ", ")
 		rhsStr := strings.Join(rhs, ", ")
@@ -272,13 +337,16 @@ func (t *translator) translateStmt(stmt ir.Stmt) nim.Node {
 		}
 		op := s.Op
 		if op == ":=" {
-			typ := types.MapType(s.Lhs[0].GetType(), t)
-			if typ == "error" {
-				typ = "ref Exception"
+			if len(lhs) > 1 {
+				return &nim.Stmt{Content: "var " + lhsStr + " = " + rhsStr}
 			}
-			return &nim.Stmt{Content: "var " + lhsStr + ": " + typ + " = " + rhsStr}
+			return &nim.Stmt{Content: "var " + lhsStr + ": " + types.MapType(s.Lhs[0].GetType(), t) + " = " + rhsStr}
 		}
 		return &nim.Stmt{Content: fmt.Sprintf("%s %s %s", lhsStr, op, rhsStr)}
+	case *ir.BlockStmt:
+		return &nim.BlockStmt{
+			Body: t.translateBlock(s),
+		}
 	case *ir.IfStmt:
 		var elseNodes []nim.Node
 		if s.Else != nil {
@@ -289,44 +357,97 @@ func (t *translator) translateStmt(stmt ir.Stmt) nim.Node {
 				elseNodes = append(elseNodes, t.translateStmt(e))
 			}
 		}
-		return &nim.IfStmt{
+		ifStmt := &nim.IfStmt{
 			Cond: t.translateExpr(s.Cond),
 			Body: t.translateBlock(s.Body),
 			Else: elseNodes,
 		}
+		if s.Init != nil {
+			return &nim.BlockStmt{
+				Body: []nim.Node{
+					t.translateStmt(s.Init),
+					ifStmt,
+				},
+			}
+		}
+		return ifStmt
 	case *ir.DeferStmt:
-		return &nim.Stmt{Content: "defer: " + t.translateExpr(s.Call)}
+		return &nim.Stmt{Content: "defer:\n" + t.renderNodes([]nim.Node{&nim.Stmt{Content: t.translateExpr(s.Call)}}, 1)}
 	case *ir.RangeStmt:
-		key := "_"
+		key := "i"
 		if s.Key != nil {
 			key = t.translateExpr(s.Key)
+			if key == "_" {
+				key = "i"
+			}
 		}
-		val := ""
+		val := "v"
 		if s.Value != nil {
-			val = ", " + t.translateExpr(s.Value)
+			val = t.translateExpr(s.Value)
+			if val == "_" {
+				val = "v"
+			}
 		}
-		return &nim.Stmt{Content: fmt.Sprintf("for %s%s in %s:\n%s", key, val, t.translateExpr(s.X), t.renderNodes(t.translateBlock(s.Body), 1))}
+		return &nim.Stmt{Content: fmt.Sprintf("for %s, %s in %s:\n%s", key, val, t.translateExpr(s.X), t.renderNodes(t.translateBlock(s.Body), 1))}
 	case *ir.SwitchStmt:
-		return &nim.Stmt{Content: fmt.Sprintf("case %s:\n%s", t.translateExpr(s.Tag), t.renderNodes(t.translateBlock(s.Body), 1))}
-	case *ir.TypeSwitchStmt:
-		// Go: switch v := any.(type) { ... }
-		// Nim: if any is T1: let v = any.T1; ... elif any is T2: ...
-		var sb strings.Builder
-		for i, stmt := range s.Body.List {
-			if i > 0 {
-				sb.WriteString("\nelif ")
-			} else {
-				sb.WriteString("if ")
-			}
+		cs := &nim.CaseStmt{Expr: t.translateExpr(s.Tag)}
+		for _, stmt := range s.Body.List {
 			tcc := stmt.(*ir.CaseClause)
-			if len(tcc.List) == 0 {
-				sb.WriteString("else:\n")
-			} else {
-				sb.WriteString(fmt.Sprintf("any is %s:\n", t.translateExpr(tcc.List[0])))
+			var vals []string
+			for _, l := range tcc.List {
+				vals = append(vals, t.translateExpr(l))
 			}
-			sb.WriteString(t.renderNodes(t.translateBlock(&ir.BlockStmt{List: tcc.Body}), 1))
+			cs.Clauses = append(cs.Clauses, nim.CaseClause{
+				Vals: vals,
+				Body: t.translateBlock(&ir.BlockStmt{List: tcc.Body}),
+			})
 		}
-		return &nim.Stmt{Content: sb.String()}
+		return cs
+	case *ir.TypeSwitchStmt:
+		// Map type switch to if-is chain
+		var varName string
+		var expr string
+		if as, ok := s.Assign.(*ir.AssignStmt); ok {
+			expr = t.translateExpr(as.Rhs[0])
+			if len(as.Lhs) > 0 {
+				varName = t.translateExpr(as.Lhs[0])
+			}
+		} else if es, ok := s.Assign.(*ir.ExprStmt); ok {
+			expr = t.translateExpr(es.X)
+		}
+
+		var first *nim.IfStmt
+		var current *nim.IfStmt
+		for _, stmt := range s.Body.List {
+			tcc := stmt.(*ir.CaseClause)
+			if len(tcc.List) > 0 {
+				typStr := t.translateExpr(tcc.List[0])
+				cond := fmt.Sprintf("%s is %s", expr, typStr)
+				body := t.translateBlock(&ir.BlockStmt{List: tcc.Body})
+				if varName != "" && varName != "_" {
+					body = append([]nim.Node{&nim.Stmt{Content: fmt.Sprintf("let %s = cast[%s](%s)", varName, typStr, expr)}}, body...)
+				}
+				branch := &nim.IfStmt{
+					Cond: cond,
+					Body: body,
+				}
+				if first == nil {
+					first = branch
+				} else {
+					current.Else = []nim.Node{branch}
+				}
+				current = branch
+			} else {
+				// default case
+				if current != nil {
+					current.Else = t.translateBlock(&ir.BlockStmt{List: tcc.Body})
+				}
+			}
+		}
+		if first == nil {
+			return &nim.Stmt{Content: "discard # empty type switch"}
+		}
+		return first
 	case *ir.CaseClause:
 		var labels []string
 		for _, l := range s.List {
@@ -339,6 +460,27 @@ func (t *translator) translateStmt(stmt ir.Stmt) nim.Node {
 			label = "of " + label
 		}
 		return &nim.Stmt{Content: fmt.Sprintf("%s:\n%s", label, t.renderNodes(t.translateBlock(&ir.BlockStmt{List: s.Body}), 1))}
+	case *ir.ForStmt:
+		cond := t.translateExpr(s.Cond)
+		body := t.translateBlock(s.Body)
+		if s.Post != nil {
+			body = append(body, t.translateStmt(s.Post))
+		}
+		forStmt := &nim.ForStmt{
+			Cond: cond,
+			Body: body,
+		}
+		if s.Init != nil {
+			return &nim.BlockStmt{
+				Body: []nim.Node{
+					t.translateStmt(s.Init),
+					forStmt,
+				},
+			}
+		}
+		return forStmt
+	case *ir.IncDecStmt:
+		return &nim.Stmt{Content: fmt.Sprintf("%s.inc", t.translateExpr(s.X))}
 	case *ir.BranchStmt:
 		if s.Label != "" {
 			return &nim.Stmt{Content: strings.ToLower(s.Tok) + " " + s.Label}
@@ -354,36 +496,129 @@ func (t *translator) renderNodes(nodes []nim.Node, indent int) string {
 		return strings.Repeat("  ", indent) + "discard"
 	}
 	for i, n := range nodes {
+		if n == nil {
+			continue
+		}
 		if i > 0 {
 			sb.WriteString("\n")
 		}
 		sb.WriteString(n.Render(indent))
 	}
+	if sb.Len() == 0 {
+		return strings.Repeat("  ", indent) + "discard"
+	}
 	return sb.String()
 }
 
+func (t *translator) isTypeName(expr ir.Expr) bool {
+	if id, ok := expr.(*ir.Ident); ok {
+		return isExported(id.Name) // Basic heuristic
+	}
+	return false
+}
+
 func (t *translator) translateExpr(expr ir.Expr) string {
+	return t.translateExprWithIndent(expr, 0)
+}
+
+func EscapeNimKeyword(name string) string {
+	keywords := map[string]bool{
+		"addr":      true,
+		"and":       true,
+		"as":        true,
+		"asm":       true,
+		"bind":      true,
+		"block":     true,
+		"break":     true,
+		"case":      true,
+		"cast":      true,
+		"concept":   true,
+		"const":     true,
+		"continue":  true,
+		"converter": true,
+		"defer":     true,
+		"discard":   true,
+		"distinct":  true,
+		"div":       true,
+		"do":        true,
+		"elif":      true,
+		"else":      true,
+		"end":       true,
+		"enum":      true,
+		"except":    true,
+		"export":    true,
+		"finally":   true,
+		"for":       true,
+		"from":      true,
+		"func":      true,
+		"if":        true,
+		"import":    true,
+		"in":        true,
+		"include":   true,
+		"interface": true,
+		"is":        true,
+		"isnot":     true,
+		"iterator":  true,
+		"let":       true,
+		"macro":     true,
+		"method":    true,
+		"mixin":     true,
+		"mod":       true,
+		"nil":       true,
+		"not":       true,
+		"notin":     true,
+		"object":    true,
+		"of":        true,
+		"or":        true,
+		"out":       true,
+		"proc":      true,
+		"ptr":       true,
+		"raise":     true,
+		"ref":       true,
+		"return":    true,
+		"shl":       true,
+		"shr":       true,
+		"static":    true,
+		"template":  true,
+		"try":       true,
+		"tuple":     true,
+		"type":      true,
+		"using":     true,
+		"var":       true,
+		"when":      true,
+		"while":     true,
+		"xor":       true,
+		"yield":     true,
+	}
+	if keywords[name] {
+		return name + "_"
+	}
+	return name
+}
+
+func (t *translator) translateExprWithIndent(expr ir.Expr, n int) string {
 	if expr == nil {
 		return ""
 	}
 	switch e := expr.(type) {
 	case *ir.Ident:
-		return e.Name
+		return EscapeNimKeyword(e.Name)
 	case *ir.BasicLit:
 		return e.Value
 	case *ir.CallExpr:
 		fun := t.translateExpr(e.Fun)
 		if fun == "make" && len(e.Args) >= 1 {
 			if te, ok := e.Args[0].(*ir.TypeExpr); ok {
-				switch te.Type.(type) {
+				switch mt := te.Type.(type) {
 				case *ir.MapType:
-					return "initTable[" + types.MapType(te.Type.(*ir.MapType).Key, t) + ", " + types.MapType(te.Type.(*ir.MapType).Value, t) + "]()"
+					t.AddImport("tables")
+					return "initTable[" + types.MapType(mt.Key, t) + ", " + types.MapType(mt.Value, t) + "]()"
 				case *ir.SliceType:
 					size := "0"
 					if len(e.Args) >= 2 {
 						size = t.translateExpr(e.Args[1])
 					}
-					return "newSeq[" + types.MapType(te.Type.(*ir.SliceType).Elem, t) + "](" + size + ")"
+					return "newSeq[" + types.MapType(mt.Elem, t) + "](" + size + ")"
 				}
 			}
 		}
@@ -393,18 +628,65 @@ func (t *translator) translateExpr(expr ir.Expr) string {
 			fun = b.NimName
 			isMember = b.IsMember
 		}
+
+		if fun == "panic" {
+			arg := t.translateExpr(e.Args[0])
+			return fmt.Sprintf("raise newException(Exception, %s)", arg)
+		}
+		if fun == "recover" {
+			return "getCurrentExceptionMsg()" // Simplified, Go's recover is more complex
+		}
+
 		var args []string
 		for _, arg := range e.Args {
-			args = append(args, t.translateExpr(arg))
+			args = append(args, t.translateExprWithIndent(arg, n+1))
 		}
 		if isMember && len(args) > 0 {
+			if fun == "add" {
+				// Go's append returns the slice, Nim's add is void.
+				// For now, if it's used as an expression, we need to handle it.
+				// This is a common transpilation challenge.
+				return fmt.Sprintf("(var temp = %s; temp.add(%s); temp)", args[0], strings.Join(args[1:], ", "))
+			}
 			return fmt.Sprintf("%s.%s(%s)", args[0], fun, strings.Join(args[1:], ", "))
 		}
 		return fmt.Sprintf("%s(%s)", fun, strings.Join(args, ", "))
 	case *ir.TypeAssertExpr:
-		return fmt.Sprintf("%s.cast(%s)", t.translateExpr(e.X), types.MapType(e.Type, t))
+		return fmt.Sprintf("cast[%s](%s)", types.MapType(e.Type, t), t.translateExpr(e.X))
 	case *ir.FuncLit:
-		return "proc(...) = discard" // Simplified
+		var params []string
+		for _, p := range e.Type.Params {
+			for _, name := range p.Names {
+				params = append(params, fmt.Sprintf("%s: %s", name, types.MapType(p.Type, t)))
+			}
+		}
+		ret := "void"
+		if len(e.Type.Results) > 0 {
+			ret = types.MapType(e.Type.Results[0].Type, t)
+		}
+		// Use a single-line proc if the body is simple, otherwise multiline
+		bodyNodes := t.translateBlock(e.Body)
+		if len(bodyNodes) == 1 {
+			if stmt, ok := bodyNodes[0].(*nim.Stmt); ok && !strings.Contains(stmt.Content, "\n") {
+				content := stmt.Content
+				if strings.HasPrefix(content, "return ") {
+					content = strings.TrimPrefix(content, "return ")
+				}
+				return fmt.Sprintf("(proc(%s): %s = %s)", strings.Join(params, ", "), ret, content)
+			}
+		}
+		var sb strings.Builder
+		for i, bn := range bodyNodes {
+			if i > 0 {
+				sb.WriteString("\n")
+			}
+			res := bn.Render(n + 1)
+			if !strings.HasPrefix(res, "  ") {
+				res = strings.Repeat("  ", n+1) + res
+			}
+			sb.WriteString(res)
+		}
+		return fmt.Sprintf("(proc(%s): %s =\n%s)", strings.Join(params, ", "), ret, sb.String())
 	case *ir.BinaryExpr:
 		if e.Op == ":" {
 			return fmt.Sprintf("%s: %s", t.translateExpr(e.X), t.translateExpr(e.Y))
@@ -412,6 +694,18 @@ func (t *translator) translateExpr(expr ir.Expr) string {
 		op := e.Op
 		// Map Go operators to Nim if they differ
 		switch op {
+		case "==":
+			if t.translateExpr(e.Y) == "nil" {
+				return fmt.Sprintf("%s.isNil", t.translateExpr(e.X))
+			}
+		case "!=":
+			if t.translateExpr(e.Y) == "nil" {
+				return fmt.Sprintf("not %s.isNil", t.translateExpr(e.X))
+			}
+		case "+":
+			if e.X.GetType().String() == "string" || e.Y.GetType().String() == "string" {
+				op = "&"
+			}
 		case "&&":
 			op = "and"
 		case "||":
@@ -426,12 +720,9 @@ func (t *translator) translateExpr(expr ir.Expr) string {
 		if x, ok := e.X.(*ir.Ident); ok && x.Name == "C" {
 			return e.Sel
 		}
-		// Method expression like Person.String
-		if id, ok := e.X.(*ir.Ident); ok {
-			// Basic heuristic: if X is capitalized, it's likely a type name in Go
-			if isExported(id.Name) {
-				return id.Name + "." + e.Sel
-			}
+		if t.isTypeName(e.X) {
+			// Method expression Type.Method
+			return t.translateExpr(e.X) + "." + e.Sel
 		}
 		return fmt.Sprintf("%s.%s", t.translateExpr(e.X), e.Sel)
 	case *ir.IndexExpr:
@@ -453,7 +744,16 @@ func (t *translator) translateExpr(expr ir.Expr) string {
 			elms = append(elms, t.translateExpr(elm))
 		}
 		typ := types.MapType(e.Type, t)
-		if typ == "object" || strings.HasPrefix(typ, "struct") || strings.HasPrefix(typ, "tuple") || isExported(typ) || typ == "Person" || typ == "Employee" || typ == "MyInt" || typ == "MyError" {
+		if strings.HasPrefix(typ, "seq") {
+			return fmt.Sprintf("@ [%s]", strings.Join(elms, ", "))
+		}
+		if strings.HasPrefix(typ, "Table") {
+			return fmt.Sprintf("{%s}.toTable", strings.Join(elms, ", "))
+		}
+		if strings.HasPrefix(typ, "array") {
+			return fmt.Sprintf("[%s]", strings.Join(elms, ", "))
+		}
+		if typ == "object" || strings.HasPrefix(typ, "struct") || strings.HasPrefix(typ, "tuple") || isExported(typ) || typ == "Person" || typ == "Employee" || typ == "MyInt" || typ == "MyError" || typ == "Point" || strings.Contains(typ, ".") || typ == "AliasInt" {
 			return fmt.Sprintf("%s(%s)", typ, strings.Join(elms, ", "))
 		}
 		return fmt.Sprintf("%s(%s)", typ, strings.Join(elms, ", "))

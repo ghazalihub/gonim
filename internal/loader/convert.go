@@ -93,9 +93,14 @@ func (c *converter) convertDecl(decl ast.Decl) []ir.Decl {
 						})
 					}
 				}
+				irType := c.convertType(typ)
+				if spec.Assign != 0 {
+					// For aliases, use underlying type directly in the declaration
+					irType = c.convertType(typ.Underlying())
+				}
 				decls = append(decls, &ir.TypeDecl{
 					Name:       spec.Name.Name,
-					Type:       c.convertType(typ),
+					Type:       irType,
 					Alias:      spec.Assign != 0,
 					TypeParams: tps,
 				})
@@ -313,6 +318,11 @@ func (c *converter) convertStmt(stmt ast.Stmt) ir.Stmt {
 	switch s := stmt.(type) {
 	case *ast.ExprStmt:
 		return &ir.ExprStmt{X: c.convertExpr(s.X)}
+	case *ast.IncDecStmt:
+		return &ir.IncDecStmt{
+			X:  c.convertExpr(s.X),
+			Op: s.Tok.String(),
+		}
 	case *ast.DeclStmt:
 		return &ir.DeclStmt{Decls: c.convertDecl(s.Decl)}
 	case *ast.AssignStmt:
@@ -478,7 +488,7 @@ func (c *converter) convertExpr(expr ast.Expr) ir.Expr {
 		}
 	case *ast.FuncLit:
 		return &ir.FuncLit{
-			Type: c.convertType(c.pkg.TypesInfo.TypeOf(e.Type)).(*ir.FuncType),
+			Type: c.convertSignature(c.pkg.TypesInfo.TypeOf(e).(*types.Signature)),
 			Body: c.convertBlockStmt(e.Body),
 		}
 	case *ast.ArrayType, *ast.MapType, *ast.ChanType, *ast.InterfaceType, *ast.StructType:
@@ -493,6 +503,8 @@ func (c *converter) convertExpr(expr ast.Expr) ir.Expr {
 			Typ: c.convertType(c.pkg.TypesInfo.TypeOf(e)),
 		}
 	case *ast.StarExpr:
+		// If the type is a pointer, it's a dereference or a pointer type.
+		// convertExpr handles expressions.
 		return &ir.UnaryExpr{
 			Op:  "*",
 			X:   c.convertExpr(e.X),

@@ -1,1 +1,3 @@
-proc WriteString*(w: any, s: string): (int, error) = (0, nil)
+type MyError* = ref object of CatchableError
+  msg*: string
+proc WriteString*(w: any, s: string): (int, MyError) = (0, nil)

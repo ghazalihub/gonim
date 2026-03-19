@@ -59,6 +59,11 @@ type (
 		Call *CallExpr
 	}
 
+	IncDecStmt struct {
+		X  Expr
+		Op string // "++" or "--"
+	}
+
 	SwitchStmt struct {
 		Init Stmt
 		Tag  Expr
@@ -93,6 +98,7 @@ func (*RangeStmt) stmtNode()      {}
 func (*BranchStmt) stmtNode()     {}
 func (*DeferStmt) stmtNode()      {}
 func (*GoStmt) stmtNode()         {}
+func (*IncDecStmt) stmtNode()     {}
 func (*SwitchStmt) stmtNode()     {}
 func (*CaseClause) stmtNode()     {}
 func (*TypeSwitchStmt) stmtNode() {}
@@ -109,6 +115,7 @@ func (s *RangeStmt) String() string      { return "range" }
 func (s *BranchStmt) String() string     { return s.Tok }
 func (s *DeferStmt) String() string      { return "defer" }
 func (s *GoStmt) String() string         { return "go" }
+func (s *IncDecStmt) String() string     { return "incdec" }
 func (s *SwitchStmt) String() string     { return "switch" }
 func (s *CaseClause) String() string     { return "case" }
 func (s *TypeSwitchStmt) String() string { return "type switch" }

@@ -1,1 +1,4 @@
-proc New*(msg: string): error = nil
+type MyError* = ref object of CatchableError
+
+proc New*(msg: string): MyError =
+  new(result)
