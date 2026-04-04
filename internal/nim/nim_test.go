@@ -27,6 +27,11 @@ func TestNimGenerator(t *testing.T) {
 	}
 	defer os.Remove(tmpFile)
 
+	_, err := exec.LookPath("nim")
+	if err != nil {
+		t.Skip("nim not found, skipping check")
+		return
+	}
 	cmd := exec.Command("nim", "check", tmpFile)
 	output, err := cmd.CombinedOutput()
 	if err != nil {

@@ -42,12 +42,18 @@ func MapType(t ir.Type, adder ImportAdder) string {
 		case "uintptr":
 			return "uintptr"
 		case "error":
-			return "MyError"
+			return "ref Exception"
+		case "any":
+			return "AnyX"
 		default:
 			return tt.Name
 		}
 	case *ir.PointerType:
-		return fmt.Sprintf("ref %s", MapType(tt.Elem, adder))
+		elem := MapType(tt.Elem, adder)
+		if strings.HasPrefix(elem, "object") {
+			return "ref " + elem
+		}
+		return "ptr " + elem
 	case *ir.SliceType:
 		return fmt.Sprintf("seq[%s]", MapType(tt.Elem, adder))
 	case *ir.ArrayType:
@@ -80,9 +86,9 @@ func MapType(t ir.Type, adder ImportAdder) string {
 		return fmt.Sprintf("tuple[%s]", strings.Join(fields, ", "))
 	case *ir.InterfaceType:
 		if len(tt.Methods) == 0 {
-			return "any"
+			return "AnyX" // Avoid collision with Nim's any
 		}
-		return "concept" // Simplified
+		return "concept x" // Simplified
 	case *ir.FuncType:
 		var params []string
 		for _, p := range tt.Params {

@@ -1,4 +1,15 @@
-type MyError* = ref object of CatchableError
-  msg*: string
+type AnyX* = auto
+proc isNil*(e: auto): bool =
+  when e is ref:
+    e == nil
+  else:
+    false
 
-proc isNil*(e: MyError): bool = e == nil
+proc Println*(args: varargs[string, `$`]) =
+  for arg in args:
+    stdout.write($arg)
+  stdout.write("\n")
+
+proc Print*(args: varargs[string, `$`]) =
+  for arg in args:
+    stdout.write($arg)
