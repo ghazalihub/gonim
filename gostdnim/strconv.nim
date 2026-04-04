@@ -1,4 +1,2 @@
-type MyError* = ref object of CatchableError
-  msg*: string
 proc Itoa*(i: int): string = ""
-proc Atoi*(s: string): (int, MyError) = (0, nil)
+proc Atoi*(s: string): (int, ref Exception) = (0, nil)

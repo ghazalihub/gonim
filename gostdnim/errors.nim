@@ -1,4 +1,1 @@
-type MyError* = ref object of CatchableError
-
-proc New*(msg: string): MyError =
-  new(result)
+proc New*(msg: string): ref Exception = nil

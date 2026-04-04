@@ -1,3 +1,2 @@
-type MyError* = ref object of CatchableError
-  msg*: string
-proc WriteString*(w: any, s: string): (int, MyError) = (0, nil)
+import os
+proc WriteString*(f: File, s: string): (int, ref Exception) = (0, nil)
