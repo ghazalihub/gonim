@@ -282,6 +282,26 @@ func (t *translator) translateStmt(stmt ir.Stmt) nim.Node {
 		if len(s.Lhs) == 1 && s.Lhs[0].(interface{String() string}).String() == "_" {
 			return &nim.Stmt{Content: "discard " + t.translateExpr(s.Rhs[0])}
 		}
+		// Optimized append: s = append(s, x, y) -> s.add(x); s.add(y)
+		if len(s.Lhs) == 1 && len(s.Rhs) == 1 && (s.Op == "=" || s.Op == ":=") {
+			if ce, ok := s.Rhs[0].(*ir.CallExpr); ok {
+				if id, ok := ce.Fun.(*ir.Ident); ok && id.Name == "append" {
+					if len(ce.Args) >= 1 && t.translateExpr(s.Lhs[0]) == t.translateExpr(ce.Args[0]) {
+						var adds []string
+						if s.Op == ":=" {
+							adds = append(adds, "var "+t.translateExpr(s.Lhs[0])+": "+types.MapType(s.Lhs[0].GetType(), t))
+						}
+						for i := 1; i < len(ce.Args); i++ {
+							adds = append(adds, fmt.Sprintf("%s.add(%s)", t.translateExpr(s.Lhs[0]), t.translateExpr(ce.Args[i])))
+						}
+						if len(adds) == 0 {
+							return &nim.Stmt{Content: "discard"}
+						}
+						return &nim.Stmt{Content: strings.Join(adds, "\n")}
+					}
+				}
+			}
+		}
 		hasBlank := false
 		for _, l := range s.Lhs {
 			if l.(interface{String() string}).String() == "_" {
@@ -293,6 +313,7 @@ func (t *translator) translateStmt(stmt ir.Stmt) nim.Node {
 			var rhs string
 			if len(s.Rhs) == 1 {
 				rhs = t.translateExpr(s.Rhs[0])
+				// Ensure it's treated as a tuple for unpacking if needed
 			} else {
 				var rs []string
 				for _, r := range s.Rhs {
@@ -318,6 +339,31 @@ func (t *translator) translateStmt(stmt ir.Stmt) nim.Node {
 				return &nim.Stmt{Content: fmt.Sprintf("block:\n  var (%s) = %s\n  %s", lhs, rhs, strings.Join(discards, "\n  "))}
 			}
 			return &nim.Stmt{Content: fmt.Sprintf("block:\n  (%s) = %s\n  %s", lhs, rhs, strings.Join(discards, "\n  "))}
+		}
+
+		if len(s.Lhs) > 1 && len(s.Rhs) == 1 {
+			if ta, ok := s.Rhs[0].(*ir.TypeAssertExpr); ok {
+				// Comma-ok type assertion: v, ok := x.(T)
+				lhs1 := t.translateExpr(s.Lhs[0])
+				lhs2 := t.translateExpr(s.Lhs[1])
+				typ := types.MapType(ta.Type, t)
+				rhs := t.translateExpr(ta.X)
+				if s.Op == ":=" {
+					return &nim.Stmt{Content: fmt.Sprintf("var (%s, %s) = (if %s is %s: (%s(%s), true) else: (default(%s), false))", lhs1, lhs2, rhs, typ, typ, rhs, typ)}
+				}
+				return &nim.Stmt{Content: fmt.Sprintf("(%s, %s) = (if %s is %s: (%s(%s), true) else: (default(%s), false))", lhs1, lhs2, rhs, typ, typ, rhs, typ)}
+			}
+			// Case like: x, y := f() where f returns a tuple
+			var lhs []string
+			for _, l := range s.Lhs {
+				lhs = append(lhs, t.translateExpr(l))
+			}
+			lhsStr := "(" + strings.Join(lhs, ", ") + ")"
+			rhsStr := t.translateExpr(s.Rhs[0])
+			if s.Op == ":=" {
+				return &nim.Stmt{Content: "var " + lhsStr + " = " + rhsStr}
+			}
+			return &nim.Stmt{Content: lhsStr + " = " + rhsStr}
 		}
 
 		var lhs, rhs []string
@@ -413,7 +459,12 @@ func (t *translator) translateStmt(stmt ir.Stmt) nim.Node {
 				varName = t.translateExpr(as.Lhs[0])
 			}
 		} else if es, ok := s.Assign.(*ir.ExprStmt); ok {
-			expr = t.translateExpr(es.X)
+			// Type switch like switch any.(type)
+			if ta, ok := es.X.(*ir.TypeAssertExpr); ok {
+				expr = t.translateExpr(ta.X)
+			} else {
+				expr = t.translateExpr(es.X)
+			}
 		}
 
 		var first *nim.IfStmt
@@ -425,7 +476,7 @@ func (t *translator) translateStmt(stmt ir.Stmt) nim.Node {
 				cond := fmt.Sprintf("%s is %s", expr, typStr)
 				body := t.translateBlock(&ir.BlockStmt{List: tcc.Body})
 				if varName != "" && varName != "_" {
-					body = append([]nim.Node{&nim.Stmt{Content: fmt.Sprintf("let %s = cast[%s](%s)", varName, typStr, expr)}}, body...)
+					body = append([]nim.Node{&nim.Stmt{Content: fmt.Sprintf("let %s = %s(%s)", varName, typStr, expr)}}, body...)
 				}
 				branch := &nim.IfStmt{
 					Cond: cond,
@@ -564,7 +615,6 @@ func EscapeNimKeyword(name string) string {
 		"method":    true,
 		"mixin":     true,
 		"mod":       true,
-		"nil":       true,
 		"not":       true,
 		"notin":     true,
 		"object":    true,
@@ -573,6 +623,7 @@ func EscapeNimKeyword(name string) string {
 		"out":       true,
 		"proc":      true,
 		"ptr":       true,
+		"ptr_":      true,
 		"raise":     true,
 		"ref":       true,
 		"return":    true,
@@ -646,13 +697,31 @@ func (t *translator) translateExprWithIndent(expr ir.Expr, n int) string {
 				// Go's append returns the slice, Nim's add is void.
 				// For now, if it's used as an expression, we need to handle it.
 				// This is a common transpilation challenge.
+			if len(args) > 2 {
+				var sb strings.Builder
+				sb.WriteString("(var temp = ")
+				sb.WriteString(args[0])
+				sb.WriteString(";")
+				for i := 1; i < len(args); i++ {
+					sb.WriteString(" temp.add(")
+					sb.WriteString(args[i])
+					sb.WriteString(");")
+				}
+				sb.WriteString(" temp)")
+				return sb.String()
+			}
 				return fmt.Sprintf("(var temp = %s; temp.add(%s); temp)", args[0], strings.Join(args[1:], ", "))
 			}
 			return fmt.Sprintf("%s.%s(%s)", args[0], fun, strings.Join(args[1:], ", "))
 		}
 		return fmt.Sprintf("%s(%s)", fun, strings.Join(args, ", "))
 	case *ir.TypeAssertExpr:
-		return fmt.Sprintf("cast[%s](%s)", types.MapType(e.Type, t), t.translateExpr(e.X))
+		typ := types.MapType(e.Type, t)
+		if typ == "any" {
+			return t.translateExpr(e.X)
+		}
+		// Single-value type assertion: x.(T) - should panic in Go if it fails
+		return fmt.Sprintf("(if %s is %s: %s(%s) else: (raise newException(Exception, \"type assertion failed\"); default(%s)))", t.translateExpr(e.X), typ, typ, t.translateExpr(e.X), typ)
 	case *ir.FuncLit:
 		var params []string
 		for _, p := range e.Type.Params {

@@ -42,7 +42,7 @@ func MapType(t ir.Type, adder ImportAdder) string {
 		case "uintptr":
 			return "uintptr"
 		case "error":
-			return "MyError"
+			return "ref Exception"
 		default:
 			return tt.Name
 		}
@@ -80,9 +80,9 @@ func MapType(t ir.Type, adder ImportAdder) string {
 		return fmt.Sprintf("tuple[%s]", strings.Join(fields, ", "))
 	case *ir.InterfaceType:
 		if len(tt.Methods) == 0 {
-			return "any"
+			return "Any" // Use a custom Any type from gostdnim/fmt or builtin
 		}
-		return "concept" // Simplified
+		return "concept x" // Simplified
 	case *ir.FuncType:
 		var params []string
 		for _, p := range tt.Params {
