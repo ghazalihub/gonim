@@ -195,8 +195,12 @@ func (c *converter) convertType(t types.Type) ir.Type {
 		fields := make([]*ir.Field, tt.NumFields())
 		for i := 0; i < tt.NumFields(); i++ {
 			f := tt.Field(i)
+			var names []string
+			if !f.Anonymous() {
+				names = []string{f.Name()}
+			}
 			fields[i] = &ir.Field{
-				Names: []string{f.Name()},
+				Names: names,
 				Type:  c.convertType(f.Type()),
 				Tag:   tt.Tag(i),
 			}

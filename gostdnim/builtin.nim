@@ -1,15 +1,17 @@
 type AnyX* = auto
-proc isNil*(e: auto): bool =
+proc isNilX*(e: auto): bool =
   when e is ref:
+    e == nil
+  elif e is ptr:
     e == nil
   else:
     false
 
-proc Println*(args: varargs[string, `$`]) =
-  for arg in args:
-    stdout.write($arg)
-  stdout.write("\n")
+template handleRecover*(body: untyped) =
+  try:
+    body
+  except Exception as eX:
+    discard
 
-proc Print*(args: varargs[string, `$`]) =
-  for arg in args:
-    stdout.write($arg)
+proc `$`*(e: ref Exception): string =
+  if e.isNil: "nil" else: e.msg

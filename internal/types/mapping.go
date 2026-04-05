@@ -91,8 +91,12 @@ func MapType(t ir.Type, adder ImportAdder) string {
 		return "concept x" // Simplified
 	case *ir.FuncType:
 		var params []string
-		for _, p := range tt.Params {
-			params = append(params, MapType(p.Type, adder))
+		for i, p := range tt.Params {
+			name := fmt.Sprintf("p%d", i)
+			if len(p.Names) > 0 && p.Names[0] != "" {
+				name = p.Names[0]
+			}
+			params = append(params, fmt.Sprintf("%s: %s", name, MapType(p.Type, adder)))
 		}
 		res := "void"
 		if len(tt.Results) > 0 {

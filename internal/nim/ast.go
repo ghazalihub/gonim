@@ -316,6 +316,28 @@ func (f *ForStmt) Render(n int) string {
 	return strings.TrimSuffix(sb.String(), "\n")
 }
 
+type DeferStmt struct {
+	Body []Node
+}
+
+func (d *DeferStmt) Render(n int) string {
+	var sb strings.Builder
+	sb.WriteString(ind(n))
+	sb.WriteString("defer:\n")
+	if len(d.Body) == 0 {
+		sb.WriteString(ind(n + 1))
+		sb.WriteString("discard")
+	} else {
+		for i, node := range d.Body {
+			if i > 0 {
+				sb.WriteString("\n")
+			}
+			sb.WriteString(node.Render(n + 1))
+		}
+	}
+	return sb.String()
+}
+
 type CaseStmt struct {
 	Expr    string
 	Clauses []CaseClause

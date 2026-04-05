@@ -1,3 +1,9 @@
+import std/typetraits
+
 type Type* = object
-proc TypeOf*(v: any): Type = Type()
-proc Name*(t: Type): string = ""
+  name*: string
+
+template TypeOf*(v: any): Type =
+  Type(name: v.typeof.name)
+
+proc Name*(t: Type): string = t.name
