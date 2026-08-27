@@ -1,6 +1,7 @@
 package loader
 
 import (
+	"fmt"
 	"go/ast"
 	"go/token"
 	"go/types"
@@ -124,12 +125,26 @@ func (c *converter) convertDecl(decl ast.Decl) []ir.Decl {
 						}
 					}
 				}
-				decls = append(decls, &ir.VarDecl{
-					Names:  names,
-					Type:   c.convertType(c.pkg.TypesInfo.Defs[spec.Names[0]].Type()),
-					Values: values,
-					Embeds: embeds,
-				})
+				for i, name := range spec.Names {
+					var vals []ir.Expr
+					if i < len(values) {
+						vals = []ir.Expr{values[i]}
+					} else if len(values) == 1 && len(spec.Names) > 1 {
+						vals = values
+					}
+					typ := ir.Type(&ir.BasicType{Name: "any"})
+					if obj := c.pkg.TypesInfo.Defs[name]; obj != nil {
+						typ = c.convertType(obj.Type())
+					} else if spec.Type != nil {
+						typ = c.convertType(c.pkg.TypesInfo.TypeOf(spec.Type))
+					}
+					decls = append(decls, &ir.VarDecl{
+						Names:  []string{name.Name},
+						Type:   typ,
+						Values: vals,
+						Embeds: embeds,
+					})
+				}
 			}
 		case token.CONST:
 			for _, s := range d.Specs {
@@ -147,11 +162,17 @@ func (c *converter) convertDecl(decl ast.Decl) []ir.Decl {
 						})
 					}
 				}
-				decls = append(decls, &ir.ConstDecl{
-					Names:  names,
-					Type:   c.convertType(c.pkg.TypesInfo.Defs[spec.Names[0]].Type()),
-					Values: values,
-				})
+				for i, name := range spec.Names {
+					var vals []ir.Expr
+					if i < len(values) {
+						vals = []ir.Expr{values[i]}
+					}
+					typ := ir.Type(&ir.BasicType{Name: "any"})
+					if obj := c.pkg.TypesInfo.Defs[name]; obj != nil {
+						typ = c.convertType(obj.Type())
+					}
+					decls = append(decls, &ir.ConstDecl{Names: []string{name.Name}, Type: typ, Values: vals})
+				}
 			}
 		}
 	case *ast.FuncDecl:
@@ -191,6 +212,8 @@ func (c *converter) convertType(t types.Type) ir.Type {
 		irType = &ir.ArrayType{Len: tt.Len(), Elem: c.convertType(tt.Elem())}
 	case *types.Map:
 		irType = &ir.MapType{Key: c.convertType(tt.Key()), Value: c.convertType(tt.Elem())}
+	case *types.Chan:
+		irType = &ir.ChanType{Dir: int(tt.Dir()), Elem: c.convertType(tt.Elem())}
 	case *types.Struct:
 		fields := make([]*ir.Field, tt.NumFields())
 		for i := 0; i < tt.NumFields(); i++ {
@@ -364,16 +387,18 @@ func (c *converter) convertStmt(stmt ast.Stmt) ir.Stmt {
 	case *ast.BranchStmt:
 		return &ir.BranchStmt{
 			Tok:   s.Tok.String(),
-			Label: s.Label.Name,
+			Label: identName(s.Label),
 		}
 	case *ast.DeferStmt:
-		return &ir.DeferStmt{
-			Call: c.convertExpr(s.Call).(*ir.CallExpr),
+		if call, ok := c.convertExpr(s.Call).(*ir.CallExpr); ok {
+			return &ir.DeferStmt{Call: call}
 		}
+		return &ir.UnsupportedStmt{Kind: "defer", Text: fmt.Sprint(s.Call)}
 	case *ast.GoStmt:
-		return &ir.GoStmt{
-			Call: c.convertExpr(s.Call).(*ir.CallExpr),
+		if call, ok := c.convertExpr(s.Call).(*ir.CallExpr); ok {
+			return &ir.GoStmt{Call: call}
 		}
+		return &ir.UnsupportedStmt{Kind: "go", Text: fmt.Sprint(s.Call)}
 	case *ast.SwitchStmt:
 		return &ir.SwitchStmt{
 			Init: c.convertStmt(s.Init),
@@ -386,6 +411,12 @@ func (c *converter) convertStmt(stmt ast.Stmt) ir.Stmt {
 			Assign: c.convertStmt(s.Assign),
 			Body:   c.convertBlockStmt(s.Body),
 		}
+	case *ast.SelectStmt:
+		return &ir.UnsupportedStmt{Kind: "select", Text: "select statements require channel runtime support"}
+	case *ast.LabeledStmt:
+		return &ir.BlockStmt{List: []ir.Stmt{c.convertStmt(s.Stmt)}}
+	case *ast.SendStmt:
+		return &ir.UnsupportedStmt{Kind: "send", Text: fmt.Sprint(s)}
 	case *ast.CaseClause:
 		// Go uses *ast.CaseClause for both switch and type switch.
 		// If it's a type switch, List will contain types.
@@ -462,6 +493,8 @@ func (c *converter) convertExpr(expr ast.Expr) ir.Expr {
 			Index: c.convertExpr(e.Index),
 			Typ:   c.convertType(c.pkg.TypesInfo.TypeOf(e)),
 		}
+	case *ast.ParenExpr:
+		return c.convertExpr(e.X)
 	case *ast.IndexListExpr:
 		var indices []ir.Expr
 		for _, idx := range e.Indices {
@@ -512,4 +545,11 @@ func (c *converter) convertExpr(expr ast.Expr) ir.Expr {
 		}
 	}
 	return &ir.Ident{Name: "unknown_expr"}
+}
+
+func identName(id *ast.Ident) string {
+	if id == nil {
+		return ""
+	}
+	return id.Name
 }
