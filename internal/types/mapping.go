@@ -63,6 +63,11 @@ func MapType(t ir.Type, adder ImportAdder) string {
 			adder.AddImport("tables")
 		}
 		return fmt.Sprintf("Table[%s, %s]", MapType(tt.Key, adder), MapType(tt.Value, adder))
+	case *ir.ChanType:
+		if adder != nil {
+			adder.AddImport("channels")
+		}
+		return fmt.Sprintf("Channel[%s]", MapType(tt.Elem, adder))
 	case *ir.NamedType:
 		name := tt.Name
 		if tt.Package != "" && tt.Package != "main" && !strings.Contains(tt.Package, "command-line-arguments") {
