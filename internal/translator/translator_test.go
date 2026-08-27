@@ -107,3 +107,56 @@ func main() {
 		}
 	}
 }
+
+func TestConcurrencyEmbeddingAndLabels(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "go2nim-concurrency-test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	goFile := filepath.Join(tmpDir, "main.go")
+	content := `package main
+
+type base struct { ID int }
+type child struct { *base; Name string }
+
+func worker(ch chan int) { ch <- 7 }
+
+func main() {
+	ch := make(chan int)
+	go worker(ch)
+	value := <-ch
+Loop:
+	for value > 0 {
+		value--
+		if value == 3 { break Loop }
+	}
+	_ = child{}
+}
+`
+	if err := os.WriteFile(goFile, []byte(content), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	prog, err := loader.Load(goFile)
+	if err != nil {
+		t.Fatalf("Load failed: %v", err)
+	}
+	nimCode := Translate(prog)[0].Render(0)
+	checks := []string{
+		"import channels",
+		"import threadpool",
+		"base*: ptr base",
+		"ch.send(7)",
+		"spawn worker(ch)",
+		"value = ch.recv()",
+		"block Loop:",
+		"break Loop",
+	}
+	for _, want := range checks {
+		if !strings.Contains(nimCode, want) {
+			t.Fatalf("generated Nim missing %q:\n%s", want, nimCode)
+		}
+	}
+}

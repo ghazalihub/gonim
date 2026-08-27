@@ -444,6 +444,18 @@ func (t *translator) translateStmt(stmt ir.Stmt) nim.Node {
 	case *ir.DeferStmt:
 		return &nim.Stmt{Content: "defer:\n" + t.renderNodes([]nim.Node{&nim.Stmt{Content: t.translateExpr(s.Call)}}, 1)}
 	case *ir.RangeStmt:
+		if _, ok := s.X.GetType().(*ir.ChanType); ok {
+			val := "v"
+			if s.Value != nil {
+				val = t.translateExpr(s.Value)
+			} else if s.Key != nil {
+				val = t.translateExpr(s.Key)
+			}
+			if val == "_" {
+				val = "v"
+			}
+			return &nim.Stmt{Content: fmt.Sprintf("while true:\n  let %s = %s.recv()\n%s", val, t.translateExpr(s.X), t.renderNodes(t.translateBlock(s.Body), 1))}
+		}
 		key := "i"
 		if s.Key != nil {
 			key = t.translateExpr(s.Key)
@@ -566,6 +578,10 @@ func (t *translator) translateStmt(stmt ir.Stmt) nim.Node {
 	case *ir.GoStmt:
 		t.AddImport("threadpool")
 		return &nim.Stmt{Content: "spawn " + t.translateExpr(s.Call) + " # translated from Go go statement"}
+	case *ir.SendStmt:
+		return &nim.Stmt{Content: fmt.Sprintf("%s.send(%s)", t.translateExpr(s.Chan), t.translateExpr(s.Value))}
+	case *ir.LabeledStmt:
+		return &nim.BlockStmt{Label: EscapeNimKeyword(s.Label), Body: []nim.Node{t.translateStmt(s.Stmt)}}
 	case *ir.UnsupportedStmt:
 		return &nim.Stmt{Content: fmt.Sprintf("discard # unsupported Go %s: %s", s.Kind, strings.ReplaceAll(s.Text, "\n", " "))}
 	case *ir.BranchStmt:
@@ -714,6 +730,10 @@ func (t *translator) translateExprWithIndent(expr ir.Expr, n int) string {
 						size = t.translateExpr(e.Args[1])
 					}
 					return "newSeq[" + types.MapType(mt.Elem, t) + "](" + size + ")"
+				case *ir.ChanType:
+					t.AddImport("channels")
+					chanTyp := types.MapType(mt, t)
+					return fmt.Sprintf("(block: var ch: %s; ch.open(); ch)", chanTyp)
 				}
 			}
 		}
@@ -873,6 +893,8 @@ func (t *translator) translateExprWithIndent(expr ir.Expr, n int) string {
 			op = "not "
 		case "*":
 			return fmt.Sprintf("%s[]", t.translateExpr(e.X))
+		case "<-":
+			return fmt.Sprintf("%s.recv()", t.translateExpr(e.X))
 		case "&":
 			expr := t.translateExpr(e.X)
 			// Heuristic: if it's a composite literal (contains '(') or a basic literal, use & in Nim

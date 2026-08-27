@@ -46,6 +46,16 @@ type (
 		Body  *BlockStmt
 	}
 
+	SendStmt struct {
+		Chan  Expr
+		Value Expr
+	}
+
+	LabeledStmt struct {
+		Label string
+		Stmt  Stmt
+	}
+
 	BranchStmt struct {
 		Tok   string // BREAK, CONTINUE, GOTO, FALLTHROUGH
 		Label string
@@ -100,6 +110,8 @@ func (*ReturnStmt) stmtNode()      {}
 func (*IfStmt) stmtNode()          {}
 func (*ForStmt) stmtNode()         {}
 func (*RangeStmt) stmtNode()       {}
+func (*SendStmt) stmtNode()        {}
+func (*LabeledStmt) stmtNode()     {}
 func (*BranchStmt) stmtNode()      {}
 func (*DeferStmt) stmtNode()       {}
 func (*GoStmt) stmtNode()          {}
@@ -118,6 +130,8 @@ func (s *ReturnStmt) String() string      { return "return" }
 func (s *IfStmt) String() string          { return "if" }
 func (s *ForStmt) String() string         { return "for" }
 func (s *RangeStmt) String() string       { return "range" }
+func (s *SendStmt) String() string        { return "send" }
+func (s *LabeledStmt) String() string     { return s.Label }
 func (s *BranchStmt) String() string      { return s.Tok }
 func (s *DeferStmt) String() string       { return "defer" }
 func (s *GoStmt) String() string          { return "go" }

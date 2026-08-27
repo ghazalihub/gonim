@@ -218,8 +218,12 @@ func (c *converter) convertType(t types.Type) ir.Type {
 		fields := make([]*ir.Field, tt.NumFields())
 		for i := 0; i < tt.NumFields(); i++ {
 			f := tt.Field(i)
+			names := []string{f.Name()}
+			if f.Anonymous() {
+				names = nil
+			}
 			fields[i] = &ir.Field{
-				Names: []string{f.Name()},
+				Names: names,
 				Type:  c.convertType(f.Type()),
 				Tag:   tt.Tag(i),
 			}
@@ -414,9 +418,9 @@ func (c *converter) convertStmt(stmt ast.Stmt) ir.Stmt {
 	case *ast.SelectStmt:
 		return &ir.UnsupportedStmt{Kind: "select", Text: "select statements require channel runtime support"}
 	case *ast.LabeledStmt:
-		return &ir.BlockStmt{List: []ir.Stmt{c.convertStmt(s.Stmt)}}
+		return &ir.LabeledStmt{Label: s.Label.Name, Stmt: c.convertStmt(s.Stmt)}
 	case *ast.SendStmt:
-		return &ir.UnsupportedStmt{Kind: "send", Text: fmt.Sprint(s)}
+		return &ir.SendStmt{Chan: c.convertExpr(s.Chan), Value: c.convertExpr(s.Value)}
 	case *ast.CaseClause:
 		// Go uses *ast.CaseClause for both switch and type switch.
 		// If it's a type switch, List will contain types.
